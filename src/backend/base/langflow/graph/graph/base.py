@@ -1418,7 +1418,20 @@ class Graph:
         Raises:
             ValueError: If no result is found for the vertex.
         """
+        import time
+
+        build_start_time = time.perf_counter()
+        build_start_datetime = datetime.now(timezone.utc)
+
         vertex = self.get_vertex(vertex_id)
+
+        logger.debug(
+            f"Vertex build started - "
+            f"vertex_id: {vertex_id}, "
+            f"display_name: {vertex.display_name}, "
+            f"start_time: {build_start_datetime.isoformat()}"
+        )
+
         self.run_manager.add_to_vertices_being_run(vertex_id)
         try:
             params = ""
@@ -1475,6 +1488,20 @@ class Graph:
                     await set_cache(key=vertex.id, data=vertex_dict)
 
         except Exception as exc:
+            build_end_time = time.perf_counter()
+            build_end_datetime = datetime.now(timezone.utc)
+            build_duration_seconds = build_end_time - build_start_time
+
+            logger.error(
+                f"Vertex build failed - "
+                f"vertex_id: {vertex_id}, "
+                f"display_name: {vertex.display_name}, "
+                f"start_time: {build_start_datetime.isoformat()}, "
+                f"end_time: {build_end_datetime.isoformat()}, "
+                f"duration_seconds: {build_duration_seconds:.4f}, "
+                f"error: {exc!s}"
+            )
+
             if not isinstance(exc, ComponentBuildError):
                 logger.exception("Error building Component")
             raise
@@ -1487,6 +1514,19 @@ class Graph:
         else:
             msg = f"Error building Component: no result found for vertex {vertex_id}"
             raise ValueError(msg)
+
+        build_end_time = time.perf_counter()
+        build_end_datetime = datetime.now(timezone.utc)
+        build_duration_seconds = build_end_time - build_start_time
+
+        logger.debug(
+            f"Vertex build completed - "
+            f"vertex_id: {vertex_id}, "
+            f"display_name: {vertex.display_name}, "
+            f"start_time: {build_start_datetime.isoformat()}, "
+            f"end_time: {build_end_datetime.isoformat()}, "
+            f"duration_seconds: {build_duration_seconds:.4f}"
+        )
 
         return VertexBuildResult(
             result_dict=result_dict, params=params, valid=valid, artifacts=artifacts, vertex=vertex
@@ -1528,6 +1568,18 @@ class Graph:
         event_manager: EventManager | None = None,
     ) -> Graph:
         """Processes the graph with vertices in each layer run in parallel."""
+        import time
+
+        process_start_time = time.perf_counter()
+        process_start_datetime = datetime.now(timezone.utc)
+
+        logger.info(
+            f"Graph processing started - "
+            f"flow_id: {self.flow_id}, "
+            f"session_id: {self.session_id}, "
+            f"start_time: {process_start_datetime.isoformat()}"
+        )
+
         has_webhook_component = "webhook" in start_component_id.lower() if start_component_id else False
         first_layer = self.sort_vertices(start_component_id=start_component_id)
         vertex_task_run_count: dict[str, int] = {}
@@ -1557,18 +1609,75 @@ class Graph:
                 tasks.append(task)
                 vertex_task_run_count[vertex_id] = vertex_task_run_count.get(vertex_id, 0) + 1
 
+            batch_start_time = time.perf_counter()
+            batch_start_datetime = datetime.now(timezone.utc)
+
             logger.debug(f"Running layer {layer_index} with {len(tasks)} tasks, {current_batch}")
+            logger.info(
+                f"Layer execution started - "
+                f"flow_id: {self.flow_id}, "
+                f"layer_index: {layer_index}, "
+                f"task_count: {len(tasks)}, "
+                f"vertices: {current_batch}, "
+                f"start_time: {batch_start_datetime.isoformat()}"
+            )
+
             try:
                 next_runnable_vertices = await self._execute_tasks(
                     tasks, lock=lock, has_webhook_component=has_webhook_component
                 )
+
+                batch_end_time = time.perf_counter()
+                batch_end_datetime = datetime.now(timezone.utc)
+                batch_duration_seconds = batch_end_time - batch_start_time
+
+                logger.info(
+                    f"Layer execution completed - "
+                    f"flow_id: {self.flow_id}, "
+                    f"layer_index: {layer_index}, "
+                    f"task_count: {len(tasks)}, "
+                    f"vertices: {current_batch}, "
+                    f"start_time: {batch_start_datetime.isoformat()}, "
+                    f"end_time: {batch_end_datetime.isoformat()}, "
+                    f"duration_seconds: {batch_duration_seconds:.4f}"
+                )
+
             except Exception:
+                batch_end_time = time.perf_counter()
+                batch_end_datetime = datetime.now(timezone.utc)
+                batch_duration_seconds = batch_end_time - batch_start_time
+
+                logger.error(
+                    f"Layer execution failed - "
+                    f"flow_id: {self.flow_id}, "
+                    f"layer_index: {layer_index}, "
+                    f"task_count: {len(tasks)}, "
+                    f"vertices: {current_batch}, "
+                    f"start_time: {batch_start_datetime.isoformat()}, "
+                    f"end_time: {batch_end_datetime.isoformat()}, "
+                    f"duration_seconds: {batch_duration_seconds:.4f}"
+                )
+
                 logger.exception(f"Error executing tasks in layer {layer_index}")
                 raise
             if not next_runnable_vertices:
                 break
             to_process.extend(next_runnable_vertices)
             layer_index += 1
+
+        process_end_time = time.perf_counter()
+        process_end_datetime = datetime.now(timezone.utc)
+        process_duration_seconds = process_end_time - process_start_time
+
+        logger.info(
+            f"Graph processing completed - "
+            f"flow_id: {self.flow_id}, "
+            f"session_id: {self.session_id}, "
+            f"start_time: {process_start_datetime.isoformat()}, "
+            f"end_time: {process_end_datetime.isoformat()}, "
+            f"duration_seconds: {process_duration_seconds:.2f}, "
+            f"layers_processed: {layer_index}"
+        )
 
         logger.debug("Graph processing complete")
         return self
