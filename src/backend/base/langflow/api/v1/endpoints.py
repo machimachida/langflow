@@ -4,6 +4,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
@@ -240,6 +241,9 @@ async def run_flow_generator(
     api_key_user: User | None,
     event_manager: EventManager,
     client_consumed_queue: asyncio.Queue,
+    start_time: float,
+    start_datetime: datetime,
+    session_id: str,
 ) -> None:
     """Executes a flow asynchronously and manages event streaming to the client.
 
@@ -252,6 +256,9 @@ async def run_flow_generator(
         api_key_user (User | None): Optional authenticated user running the flow
         event_manager (EventManager): Manages the streaming of events to the client
         client_consumed_queue (asyncio.Queue): Tracks client consumption of events
+        start_time (float): The start time of the flow execution (from time.perf_counter())
+        start_datetime (datetime): The start datetime of the flow execution
+        session_id (str): The session ID for this flow execution
 
     Events Generated:
         - "add_message": Sent when new messages are added during flow execution
@@ -273,9 +280,36 @@ async def run_flow_generator(
             api_key_user=api_key_user,
             event_manager=event_manager,
         )
+        end_time = time.perf_counter()
+        end_datetime = datetime.now(timezone.utc)
+        duration_seconds = end_time - start_time
+
+        # Log flow execution completion for streaming
+        logger.info(
+            f"Flow execution completed (streaming) - "
+            f"session_id: {session_id}, "
+            f"start_time: {start_datetime.isoformat()}, "
+            f"end_time: {end_datetime.isoformat()}, "
+            f"duration_seconds: {duration_seconds:.2f}"
+        )
+
         event_manager.on_end(data={"result": result.model_dump()})
         await client_consumed_queue.get()
     except (ValueError, InvalidChatInputError, SerializationError) as e:
+        end_time = time.perf_counter()
+        end_datetime = datetime.now(timezone.utc)
+        duration_seconds = end_time - start_time
+
+        # Log flow execution failure for streaming
+        logger.error(
+            f"Flow execution failed (streaming) - "
+            f"session_id: {session_id}, "
+            f"start_time: {start_datetime.isoformat()}, "
+            f"end_time: {end_datetime.isoformat()}, "
+            f"duration_seconds: {duration_seconds:.2f}, "
+            f"error: {e!s}"
+        )
+
         logger.error(f"Error running flow: {e}")
         event_manager.on_error(data={"error": str(e)})
     finally:
@@ -327,6 +361,8 @@ async def simplified_run_flow(
     if flow is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Flow not found")
     start_time = time.perf_counter()
+    start_datetime = datetime.now(timezone.utc)
+    session_id = input_request.session_id or "No session ID"
 
     if stream:
         asyncio_queue: asyncio.Queue[tuple[str | None, bytes | None, float]] = asyncio.Queue()
@@ -339,6 +375,9 @@ async def simplified_run_flow(
                 api_key_user=api_key_user,
                 event_manager=event_manager,
                 client_consumed_queue=asyncio_queue_client_consumed,
+                start_time=start_time,
+                start_datetime=start_datetime,
+                session_id=session_id,
             )
         )
 
@@ -360,6 +399,18 @@ async def simplified_run_flow(
             api_key_user=api_key_user,
         )
         end_time = time.perf_counter()
+        end_datetime = datetime.now(timezone.utc)
+        duration_seconds = end_time - start_time
+
+        # Log flow execution completion
+        logger.info(
+            f"Flow execution completed - "
+            f"session_id: {session_id}, "
+            f"start_time: {start_datetime.isoformat()}, "
+            f"end_time: {end_datetime.isoformat()}, "
+            f"duration_seconds: {duration_seconds:.2f}"
+        )
+
         background_tasks.add_task(
             telemetry_service.log_package_run,
             RunPayload(
@@ -371,6 +422,20 @@ async def simplified_run_flow(
         )
 
     except ValueError as exc:
+        end_time = time.perf_counter()
+        end_datetime = datetime.now(timezone.utc)
+        duration_seconds = end_time - start_time
+
+        # Log flow execution failure
+        logger.error(
+            f"Flow execution failed (ValueError) - "
+            f"session_id: {session_id}, "
+            f"start_time: {start_datetime.isoformat()}, "
+            f"end_time: {end_datetime.isoformat()}, "
+            f"duration_seconds: {duration_seconds:.2f}, "
+            f"error: {exc!s}"
+        )
+
         background_tasks.add_task(
             telemetry_service.log_package_run,
             RunPayload(
@@ -387,8 +452,36 @@ async def simplified_run_flow(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         raise APIException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, exception=exc, flow=flow) from exc
     except InvalidChatInputError as exc:
+        end_time = time.perf_counter()
+        end_datetime = datetime.now(timezone.utc)
+        duration_seconds = end_time - start_time
+
+        # Log flow execution failure
+        logger.error(
+            f"Flow execution failed (InvalidChatInputError) - "
+            f"session_id: {session_id}, "
+            f"start_time: {start_datetime.isoformat()}, "
+            f"end_time: {end_datetime.isoformat()}, "
+            f"duration_seconds: {duration_seconds:.2f}, "
+            f"error: {exc!s}"
+        )
+
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
+        end_time = time.perf_counter()
+        end_datetime = datetime.now(timezone.utc)
+        duration_seconds = end_time - start_time
+
+        # Log flow execution failure
+        logger.error(
+            f"Flow execution failed (Exception) - "
+            f"session_id: {session_id}, "
+            f"start_time: {start_datetime.isoformat()}, "
+            f"end_time: {end_datetime.isoformat()}, "
+            f"duration_seconds: {duration_seconds:.2f}, "
+            f"error: {exc!s}"
+        )
+
         background_tasks.add_task(
             telemetry_service.log_package_run,
             RunPayload(
@@ -694,7 +787,9 @@ async def custom_component_update(
 ):
     """Update an existing custom component with new code and configuration.
 
-    Processes the provided code and template updates, applies parameter changes (including those loaded from the database), updates the component's build configuration, and validates outputs. Returns the updated component node as a JSON-serializable dictionary.
+    Processes the provided code and template updates, applies parameter changes (including those loaded from the
+    database), updates the component's build configuration, and validates outputs. Returns the updated component
+    node as a JSON-serializable dictionary.
 
     Raises:
         HTTPException: If an error occurs during component building or updating.
