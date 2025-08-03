@@ -1,5 +1,6 @@
 # Add helper functions for each event type
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any, Protocol
 
@@ -7,6 +8,7 @@ from langchain_core.agents import AgentFinish
 from langchain_core.messages import AIMessageChunk, BaseMessage
 from typing_extensions import TypedDict
 
+from langflow.logging import logger
 from langflow.schema.content_block import ContentBlock
 from langflow.schema.content_types import TextContent, ToolContent
 from langflow.schema.log import SendMessageFunctionType
@@ -58,6 +60,18 @@ async def handle_on_chain_start(
     # Create content blocks if they don't exist
     if not agent_message.content_blocks:
         agent_message.content_blocks = [ContentBlock(title="Agent Steps", contents=[])]
+
+    # Log LLM inference start
+    session_id = getattr(agent_message, "session_id", None)
+    event_name = event.get("name", "")
+    start_datetime = datetime.now(timezone.utc)
+
+    logger.info(
+        f"LLM inference started - "
+        f"session_id: {session_id}, "
+        f"event_name: {event_name}, "
+        f"start_time: {start_datetime.isoformat()}"
+    )
 
     if event["data"].get("input"):
         input_data = event["data"].get("input")
@@ -123,6 +137,21 @@ def _extract_output_text(output: str | list) -> str:
 async def handle_on_chain_end(
     event: dict[str, Any], agent_message: Message, send_message_method: SendMessageFunctionType, start_time: float
 ) -> tuple[Message, float]:
+    # Log LLM inference completion
+    session_id = getattr(agent_message, "session_id", None)
+    event_name = event.get("name", "")
+    end_datetime = datetime.now(timezone.utc)
+    duration = _calculate_duration(start_time)
+    duration_seconds = duration / 1000.0
+
+    logger.info(
+        f"LLM inference completed - "
+        f"session_id: {session_id}, "
+        f"event_name: {event_name}, "
+        f"end_time: {end_datetime.isoformat()}, "
+        f"duration_seconds: {duration_seconds:.2f}"
+    )
+
     data_output = event["data"].get("output")
     if data_output and isinstance(data_output, AgentFinish) and data_output.return_values.get("output"):
         output = data_output.return_values.get("output")
@@ -155,6 +184,18 @@ async def handle_on_tool_start(
     tool_input = event["data"].get("input")
     run_id = event.get("run_id", "")
     tool_key = f"{tool_name}_{run_id}"
+
+    # Log tool execution start
+    session_id = getattr(agent_message, "session_id", None)
+    start_datetime = datetime.now(timezone.utc)
+
+    logger.info(
+        f"Tool execution started - "
+        f"session_id: {session_id}, "
+        f"tool_name: {tool_name}, "
+        f"run_id: {run_id}, "
+        f"start_time: {start_datetime.isoformat()}"
+    )
 
     # Create content blocks if they don't exist
     if not agent_message.content_blocks:
@@ -195,6 +236,21 @@ async def handle_on_tool_end(
     tool_name = event.get("name", "")
     tool_key = f"{tool_name}_{run_id}"
     tool_content = tool_blocks_map.get(tool_key)
+
+    # Log tool execution completion
+    session_id = getattr(agent_message, "session_id", None)
+    end_datetime = datetime.now(timezone.utc)
+    duration = _calculate_duration(start_time)
+    duration_seconds = duration / 1000.0
+
+    logger.info(
+        f"Tool execution completed - "
+        f"session_id: {session_id}, "
+        f"tool_name: {tool_name}, "
+        f"run_id: {run_id}, "
+        f"end_time: {end_datetime.isoformat()}, "
+        f"duration_seconds: {duration_seconds:.2f}"
+    )
 
     if tool_content and isinstance(tool_content, ToolContent):
         # Call send_message_method first to get the updated message structure

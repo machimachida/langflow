@@ -1,5 +1,6 @@
 import re
 from abc import abstractmethod
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, cast
 
 from langchain.agents import AgentExecutor, BaseMultiActionAgent, BaseSingleActionAgent
@@ -122,6 +123,19 @@ class LCAgentComponent(Component):
         self,
         agent: Runnable | BaseSingleActionAgent | BaseMultiActionAgent | AgentExecutor,
     ) -> Message:
+        start_datetime = datetime.now(timezone.utc)
+        start_time = start_datetime.timestamp()
+
+        # Get session_id for logging
+        if hasattr(self, "graph"):
+            session_id = self.graph.session_id
+        elif hasattr(self, "_session_id"):
+            session_id = self._session_id
+        else:
+            session_id = None
+
+        logger.info(f"Agent execution started - session_id: {session_id}, start_time: {start_datetime.isoformat()}")
+
         if isinstance(agent, AgentExecutor):
             runnable = agent
         else:
@@ -159,13 +173,6 @@ class LCAgentComponent(Component):
             else:
                 input_dict["chat_history"] = [HumanMessage(content=[image_dict]) for image_dict in image_dicts]
 
-        if hasattr(self, "graph"):
-            session_id = self.graph.session_id
-        elif hasattr(self, "_session_id"):
-            session_id = self._session_id
-        else:
-            session_id = None
-
         agent_message = Message(
             sender=MESSAGE_SENDER_AI,
             sender_name=self.display_name or "Agent",
@@ -183,6 +190,20 @@ class LCAgentComponent(Component):
                 agent_message,
                 cast("SendMessageFunctionType", self.send_message),
             )
+
+            # Log execution completion
+            end_datetime = datetime.now(timezone.utc)
+            duration_seconds = end_datetime.timestamp() - start_time
+
+            logger.info(
+                f"Agent run_agent completed - "
+                f"session_id: {session_id}, "
+                f"start_time: {start_datetime.isoformat()}, "
+                f"end_time: {end_datetime.isoformat()}, "
+                f"duration_seconds: {duration_seconds:.2f}"
+            )
+
+            self.status = result
         except ExceptionWithMessageError as e:
             if hasattr(e, "agent_message") and hasattr(e.agent_message, "id"):
                 msg_id = e.agent_message.id
@@ -194,9 +215,8 @@ class LCAgentComponent(Component):
             # Log or handle any other exceptions
             logger.error(f"Error: {e}")
             raise
-
-        self.status = result
-        return result
+        else:
+            return result
 
     @abstractmethod
     def create_agent_runnable(self) -> Runnable:

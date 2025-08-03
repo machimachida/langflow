@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from langchain_core.tools import StructuredTool
 
 from langflow.base.agents.agent import LCToolsAgentComponent
@@ -81,6 +83,16 @@ class AgentComponent(ToolCallingAgentComponent):
     outputs = [Output(name="response", display_name="Response", method="message_response")]
 
     async def message_response(self) -> Message:
+        start_datetime = datetime.now(timezone.utc)
+        start_time = start_datetime.timestamp()
+
+        # Get session_id for logging
+        session_id = None
+        if hasattr(self, "graph") and self.graph:
+            session_id = self.graph.session_id
+        elif hasattr(self, "_session_id"):
+            session_id = self._session_id
+
         try:
             # Get LLM model and validate
             llm_model, display_name = self.get_llm()
@@ -114,8 +126,19 @@ class AgentComponent(ToolCallingAgentComponent):
                 system_prompt=self.system_prompt,
             )
             agent = self.create_agent_runnable()
-            return await self.run_agent(agent)
+            result = await self.run_agent(agent)
 
+            # Log execution completion
+            end_datetime = datetime.now(timezone.utc)
+            duration_seconds = end_datetime.timestamp() - start_time
+
+            logger.info(
+                f"Agent execution completed - "
+                f"session_id: {session_id}, "
+                f"start_time: {start_datetime.isoformat()}, "
+                f"end_time: {end_datetime.isoformat()}, "
+                f"duration_seconds: {duration_seconds:.2f}"
+            )
         except (ValueError, TypeError, KeyError) as e:
             logger.error(f"{type(e).__name__}: {e!s}")
             raise
@@ -125,6 +148,8 @@ class AgentComponent(ToolCallingAgentComponent):
         except Exception as e:
             logger.error(f"Unexpected error: {e!s}")
             raise
+        else:
+            return result
 
     async def get_memory_data(self):
         # TODO: This is a temporary fix to avoid message duplication. We should develop a function for this.
